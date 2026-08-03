@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, Response
 from fastapi.responses import JSONResponse
 
 app = FastAPI()
@@ -61,3 +61,37 @@ def create_task(payload: Dict[str, Any] = Body(default={})):
     task = {"id": next_id(), "title": title.strip(), "done": False}
     tasks.append(task)
     return task
+
+
+@app.put("/tasks/{task_id}")
+def update_task(task_id: int, payload: Dict[str, Any] = Body(default={})):
+    task = find_task(task_id)
+    if task is None:
+        return error(404, f"Task {task_id} not found")
+
+    if "title" not in payload and "done" not in payload:
+        return error(400, "Body must contain at least one of 'title' or 'done'")
+
+    if "title" in payload:
+        title = payload["title"]
+        if not isinstance(title, str) or not title.strip():
+            return error(400, "Field 'title' must be a non-empty string")
+        task["title"] = title.strip()
+
+    if "done" in payload:
+        done = payload["done"]
+        if not isinstance(done, bool):
+            return error(400, "Field 'done' must be true or false")
+        task["done"] = done
+
+    return task
+
+
+@app.delete("/tasks/{task_id}", status_code=204)
+def delete_task(task_id: int):
+    task = find_task(task_id)
+    if task is None:
+        return error(404, f"Task {task_id} not found")
+
+    tasks.remove(task)
+    return Response(status_code=204)
