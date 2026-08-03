@@ -3,7 +3,11 @@ from typing import Any, Dict
 from fastapi import Body, FastAPI, Response
 from fastapi.responses import JSONResponse
 
-app = FastAPI()
+app = FastAPI(
+    title="Task API",
+    description="A small in-memory to-do list API supporting the four CRUD operations.",
+    version="1.0",
+)
 
 tasks = [
     {"id": 1, "title": "Learn FastAPI", "done": True},
@@ -29,22 +33,22 @@ def error(status_code: int, message: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"error": message})
 
 
-@app.get("/")
+@app.get("/", summary="API description", tags=["meta"])
 def read_root():
     return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks"]}
 
 
-@app.get("/health")
+@app.get("/health", summary="Liveness check", tags=["meta"])
 def health():
     return {"status": "ok"}
 
 
-@app.get("/tasks")
+@app.get("/tasks", summary="List all tasks", tags=["tasks"])
 def list_tasks():
     return tasks
 
 
-@app.get("/tasks/{task_id}")
+@app.get("/tasks/{task_id}", summary="Get one task by id", tags=["tasks"])
 def get_task(task_id: int):
     task = find_task(task_id)
     if task is None:
@@ -52,7 +56,7 @@ def get_task(task_id: int):
     return task
 
 
-@app.post("/tasks", status_code=201)
+@app.post("/tasks", status_code=201, summary="Create a new task", tags=["tasks"])
 def create_task(payload: Dict[str, Any] = Body(default={})):
     title = payload.get("title")
     if not isinstance(title, str) or not title.strip():
@@ -63,7 +67,7 @@ def create_task(payload: Dict[str, Any] = Body(default={})):
     return task
 
 
-@app.put("/tasks/{task_id}")
+@app.put("/tasks/{task_id}", summary="Update a task's title and/or done flag", tags=["tasks"])
 def update_task(task_id: int, payload: Dict[str, Any] = Body(default={})):
     task = find_task(task_id)
     if task is None:
@@ -87,7 +91,7 @@ def update_task(task_id: int, payload: Dict[str, Any] = Body(default={})):
     return task
 
 
-@app.delete("/tasks/{task_id}", status_code=204)
+@app.delete("/tasks/{task_id}", status_code=204, summary="Delete a task", tags=["tasks"])
 def delete_task(task_id: int):
     task = find_task(task_id)
     if task is None:
