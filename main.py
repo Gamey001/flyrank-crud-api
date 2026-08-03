@@ -1,6 +1,7 @@
-from typing import Any, Dict
+import copy
+from typing import Any, Dict, Optional
 
-from fastapi import Body, FastAPI, Response
+from fastapi import Body, FastAPI, Query, Response
 from fastapi.responses import JSONResponse
 
 app = FastAPI(
@@ -9,11 +10,13 @@ app = FastAPI(
     version="1.0",
 )
 
-tasks = [
+SEED_TASKS = [
     {"id": 1, "title": "Learn FastAPI", "done": True},
     {"id": 2, "title": "Build a CRUD API", "done": False},
     {"id": 3, "title": "Write a README", "done": False},
 ]
+
+tasks = copy.deepcopy(SEED_TASKS)
 
 
 def find_task(task_id: int):
@@ -43,9 +46,21 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/tasks", summary="List all tasks", tags=["tasks"])
-def list_tasks():
-    return tasks
+@app.get("/tasks", summary="List tasks, optionally filtered", tags=["tasks"])
+def list_tasks(
+    done: Optional[bool] = Query(default=None, description="Keep only finished (true) or unfinished (false) tasks"),
+    search: Optional[str] = Query(default=None, description="Keep only tasks whose title contains this text"),
+):
+    results = tasks
+
+    if done is not None:
+        results = [task for task in results if task["done"] == done]
+
+    if search is not None:
+        needle = search.strip().lower()
+        results = [task for task in results if needle in task["title"].lower()]
+
+    return results
 
 
 @app.get("/tasks/{task_id}", summary="Get one task by id", tags=["tasks"])
@@ -99,3 +114,16 @@ def delete_task(task_id: int):
 
     tasks.remove(task)
     return Response(status_code=204)
+
+
+@app.get("/stats", summary="Count tasks by state", tags=["extras"])
+def stats():
+    done_count = sum(1 for task in tasks if task["done"])
+    return {"total": len(tasks), "done": done_count, "open": len(tasks) - done_count}
+
+
+@app.post("/reset", summary="Restore the 3 example tasks", tags=["extras"])
+def reset():
+    tasks.clear()
+    tasks.extend(copy.deepcopy(SEED_TASKS))
+    return tasks
