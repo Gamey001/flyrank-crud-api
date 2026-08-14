@@ -72,9 +72,7 @@ def create_task(payload: Dict[str, Any] = Body(default={})):
     if not isinstance(title, str) or not title.strip():
         return error(400, "Field 'title' is required and must be a non-empty string")
 
-    task = {"id": next_id(), "title": title.strip(), "done": False}
-    tasks.append(task)
-    return task
+    return db.create_task(title.strip())
 
 
 @app.put("/tasks/{task_id}", summary="Update a task's title and/or done flag", tags=["tasks"])
