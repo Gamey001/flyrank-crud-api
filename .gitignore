@@ -9,6 +9,10 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
+# SQLite database, recreated automatically on first run
+tasks.db
+tasks.db-journal
+
 # Editors / OS
 .DS_Store
 .idea/

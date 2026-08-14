@@ -4,11 +4,15 @@ from typing import Any, Dict, Optional
 from fastapi import Body, FastAPI, Query, Response
 from fastapi.responses import JSONResponse
 
+import db
+
 app = FastAPI(
     title="Task API",
     description="A small in-memory to-do list API supporting the four CRUD operations.",
     version="1.0",
 )
+
+db.init_db()
 
 SEED_TASKS = [
     {"id": 1, "title": "Learn FastAPI", "done": True},
