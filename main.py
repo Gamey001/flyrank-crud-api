@@ -55,21 +55,12 @@ def list_tasks(
     done: Optional[bool] = Query(default=None, description="Keep only finished (true) or unfinished (false) tasks"),
     search: Optional[str] = Query(default=None, description="Keep only tasks whose title contains this text"),
 ):
-    results = tasks
-
-    if done is not None:
-        results = [task for task in results if task["done"] == done]
-
-    if search is not None:
-        needle = search.strip().lower()
-        results = [task for task in results if needle in task["title"].lower()]
-
-    return results
+    return db.list_tasks(done=done, search=search)
 
 
 @app.get("/tasks/{task_id}", summary="Get one task by id", tags=["tasks"])
 def get_task(task_id: int):
-    task = find_task(task_id)
+    task = db.get_task(task_id)
     if task is None:
         return error(404, f"Task {task_id} not found")
     return task
