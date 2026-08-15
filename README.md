@@ -246,6 +246,12 @@ brew install --cask db-browser-for-sqlite   # macOS
 open -a "DB Browser for SQLite" tasks.db
 ```
 
+![DB Browser for SQLite showing the tasks table with five rows](docs/db-browser.png)
+
+The **Browse Data** tab above is the `tasks` table exactly as the API sees it. Note the
+`done` column: `1` and `0`, not `true` and `false` — SQLite has no boolean type, so the
+repository converts the integer back into a JSON boolean on the way out.
+
 Or query it straight from the terminal, which ships with macOS and most Linux distributions:
 
 ```console
