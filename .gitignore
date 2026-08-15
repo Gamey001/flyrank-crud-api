@@ -17,3 +17,6 @@ tasks.db-journal
 .DS_Store
 .idea/
 .vscode/
+
+# Local secrets, never committed
+.env
