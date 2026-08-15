@@ -113,6 +113,128 @@ sends real requests from the browser.
 
 ![Swagger UI showing all endpoints of the Task API](docs/swagger-ui.png)
 
+## Running the whole stack with Docker
+
+The API and a PostgreSQL database start together with one command:
+
+```bash
+cp .env.example .env      # then edit the password
+docker compose up
+```
+
+That builds the app image, starts Postgres 16, waits for the database to report healthy,
+runs `db/init.sql` to create the `tasks` table and seed it, and serves the API on
+<http://localhost:8000>. The database is published on host port **5433**, chosen so it
+does not collide with a PostgreSQL already running natively on 5432.
+
+Postgres stores its files in a named volume, `postgres_data`. The volume is what makes
+the data outlive the container: `docker compose down` removes the containers and the rows
+survive, because the volume is untouched. Only `docker compose down -v` deletes it.
+
+### Configuration
+
+The connection string lives in `.env`, which is **gitignored and never committed**.
+[`.env.example`](.env.example) is committed and documents every variable:
+
+| Variable | Purpose |
+| --- | --- |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | credentials the container is created with |
+| `POSTGRES_PORT` | host port the database is published on (default `5433`) |
+| `DATABASE_URL` | what the app connects with — `db:5432` inside compose, `localhost:5433` from your machine |
+
+## Swapping the storage layer
+
+Assignment 2 stored tasks in SQLite. This assignment swaps in PostgreSQL, and the point
+of the exercise is how little had to move to do it:
+
+```
+main.py            routes        UNCHANGED
+db.py              selector      picks a repository from DATABASE_URL
+repositories/
+  sqlite_repo.py   A2 storage    unchanged, still the fallback
+  postgres_repo.py new storage   same function names, SQL dialect differs
+```
+
+**Honestly: `main.py` was not edited at all.** `git diff` reports zero changes to it
+across this assignment — the routes still call `db.list_tasks(...)`, `db.create_task(...)`
+and so on, exactly as before. `db.py` stopped being the SQLite implementation and became a
+seven-line selector that imports one repository or the other:
+
+```python
+if os.environ.get("DATABASE_URL"):
+    from repositories import postgres_repo as _repo
+else:
+    from repositories import sqlite_repo as _repo
+```
+
+With no `DATABASE_URL` the app still runs on SQLite with no database server at all, which
+is why the A2 behaviour is still reachable. The two repositories are not identical inside —
+Postgres has a real `BOOLEAN` where SQLite fakes one with `0`/`1`, uses `%s` placeholders
+instead of `?`, `SERIAL` instead of `AUTOINCREMENT`, and `ILIKE` instead of lowercasing
+both sides for case-insensitive search. None of that leaks upward, which is the whole
+argument for the layering.
+
+## Proving the data persists
+
+Persistence was checked three ways, in increasing severity. Every transcript below is
+real output from this machine.
+
+**1. Restart the app container.** Two tasks created through the API, then the app is
+restarted while the database keeps running:
+
+```console
+$ curl -s -X POST localhost:8000/tasks -H "Content-Type: application/json" -d '{"title":"survives app restart"}'
+$ docker compose restart app
+ Container flyrank-crud-api-app-1  Started
+
+$ curl -s http://localhost:8000/tasks
+[{"id":1,...},{"id":2,...},{"id":3,...},{"id":4,"title":"survives app restart","done":false},{"id":5,"title":"survives container restart","done":false}]
+```
+
+**2. Restart the database container as well.** Both containers bounce:
+
+```console
+$ docker compose restart db app
+$ curl -s http://localhost:8000/tasks
+[... all 5 tasks still present ...]
+
+$ docker compose exec db psql -U tasks -d tasks -tAc "SELECT COUNT(*) FROM tasks;"
+5
+```
+
+**3. Destroy the containers entirely.** `docker compose down` removes the containers and
+the network — the volume is deliberately left alone:
+
+```console
+$ docker compose down
+ Container flyrank-crud-api-db-1  Removed
+ Network flyrank-crud-api_default  Removed
+
+$ docker volume ls --filter name=flyrank-crud-api_postgres_data
+flyrank-crud-api_postgres_data (local)     <- survives
+
+$ docker compose up -d
+$ curl -s http://localhost:8000/tasks
+[... all 5 tasks still present ...]
+```
+
+**The control test.** To show it really is the volume doing this rather than something
+incidental, the same teardown *with* `-v` deletes the volume, and the data does not come
+back:
+
+```console
+$ docker compose down -v
+ Volume flyrank-crud-api_postgres_data  Removed
+
+$ docker compose up -d
+$ curl -s http://localhost:8000/tasks
+[{"id":1,"title":"Learn FastAPI","done":true},{"id":2,"title":"Build a CRUD API","done":false},{"id":3,"title":"Write a README","done":false}]
+```
+
+The two custom tasks are gone and only the seeds from `db/init.sql` remain. That is the
+difference between a container and a volume in one command: containers are disposable,
+the volume is where the data actually lives.
+
 ## Looking inside the database
 
 Because the data is now a file rather than a variable, you can open it with tools that
