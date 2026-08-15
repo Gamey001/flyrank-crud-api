@@ -2,7 +2,7 @@
 
 A small REST API that manages a to-do list. It supports the four CRUD operations — **C**reate, **R**ead, **U**pdate, **D**elete — over a list of tasks, plus filtering, search and stats.
 
-Built with [FastAPI](https://fastapi.tiangolo.com/) and served by [Uvicorn](https://www.uvicorn.org/). There is no database: the tasks live in a Python list in memory, which has consequences (see [The mortality experiment](#the-mortality-experiment)).
+Built with [FastAPI](https://fastapi.tiangolo.com/), served by [Uvicorn](https://www.uvicorn.org/), and stored in [SQLite](https://www.sqlite.org/). The tasks live in a real database file, so **they survive a server restart** (see [Where the data lives](#where-the-data-lives)).
 
 A task looks like this:
 
@@ -19,6 +19,49 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/
 ```
 
 The server starts on <http://localhost:8000>. Interactive docs are at <http://localhost:8000/docs>.
+
+Nothing else to set up. There is no database server to install, no connection string to
+configure and no migration to run: on first start the application creates `tasks.db`,
+creates the `tasks` table, and inserts the three example tasks. Clone the repo, run the
+command above, and it works.
+
+## Where the data lives
+
+The database is a single file, **`tasks.db`**, in the project root — next to `main.py`.
+Set the `TASKS_DB` environment variable to put it somewhere else.
+
+That file is deliberately **not** committed (it is listed in `.gitignore`). A database is
+generated state, not source code: committing it would mean every clone carried someone
+else's tasks, and two people editing tasks would produce merge conflicts in a binary file.
+The application recreates it on demand instead.
+
+### Why SQLite?
+
+- **It needs no server.** Postgres or MySQL would mean installing and running a separate
+  database process before the API could start. SQLite is a file, and the driver is part of
+  Python's standard library — `requirements.txt` did not gain a single new entry.
+- **It is a real SQL database.** The same `SELECT`, `INSERT`, `UPDATE` and `DELETE`
+  statements that work here work against a bigger database later, so nothing learned is
+  wasted.
+- **It suits the workload.** One process, one small table, low traffic. SQLite is a poor
+  fit for many servers writing at once, which is exactly when you would reach for Postgres.
+
+### Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS tasks (
+    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT    NOT NULL,
+    done  INTEGER NOT NULL DEFAULT 0
+);
+```
+
+SQLite has no boolean type, so `done` is stored as `1`/`0` and converted back to
+`true`/`false` before the API returns JSON.
+
+`AUTOINCREMENT` also fixed a bug carried over from Assignment 1. That version calculated
+the next id with `max(ids) + 1`, which recycled an id whenever the highest-numbered task
+was deleted. SQLite guarantees an id is never reused.
 
 ## Endpoints
 
@@ -70,23 +113,195 @@ sends real requests from the browser.
 
 ![Swagger UI showing all endpoints of the Task API](docs/swagger-ui.png)
 
-## The mortality experiment
+## Running the whole stack with Docker
 
-Create a couple of tasks, stop the server, start it again, then `GET /tasks`: the tasks you
-created are gone and the list is back to the 3 examples — a request for one of them now
-returns `404`. That happens because the tasks live in an ordinary Python list held in the
-server process's memory, so the list is rebuilt from its seed values every time the process
-starts and everything the previous process held is discarded when it exits. Persisting data
-past a restart needs somewhere outside the process to put it, such as a file or a database.
+The API and a PostgreSQL database start together with one command:
+
+```bash
+cp .env.example .env      # then edit the password
+docker compose up
+```
+
+That builds the app image, starts Postgres 16, waits for the database to report healthy,
+runs `db/init.sql` to create the `tasks` table and seed it, and serves the API on
+<http://localhost:8000>. The database is published on host port **5433**, chosen so it
+does not collide with a PostgreSQL already running natively on 5432.
+
+Postgres stores its files in a named volume, `postgres_data`. The volume is what makes
+the data outlive the container: `docker compose down` removes the containers and the rows
+survive, because the volume is untouched. Only `docker compose down -v` deletes it.
+
+### Configuration
+
+The connection string lives in `.env`, which is **gitignored and never committed**.
+[`.env.example`](.env.example) is committed and documents every variable:
+
+| Variable | Purpose |
+| --- | --- |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | credentials the container is created with |
+| `POSTGRES_PORT` | host port the database is published on (default `5433`) |
+| `DATABASE_URL` | what the app connects with — `db:5432` inside compose, `localhost:5433` from your machine |
+
+## Swapping the storage layer
+
+Assignment 2 stored tasks in SQLite. This assignment swaps in PostgreSQL, and the point
+of the exercise is how little had to move to do it:
+
+```
+main.py            routes        UNCHANGED
+db.py              selector      picks a repository from DATABASE_URL
+repositories/
+  sqlite_repo.py   A2 storage    unchanged, still the fallback
+  postgres_repo.py new storage   same function names, SQL dialect differs
+```
+
+**Honestly: `main.py` was not edited at all.** `git diff` reports zero changes to it
+across this assignment — the routes still call `db.list_tasks(...)`, `db.create_task(...)`
+and so on, exactly as before. `db.py` stopped being the SQLite implementation and became a
+seven-line selector that imports one repository or the other:
+
+```python
+if os.environ.get("DATABASE_URL"):
+    from repositories import postgres_repo as _repo
+else:
+    from repositories import sqlite_repo as _repo
+```
+
+With no `DATABASE_URL` the app still runs on SQLite with no database server at all, which
+is why the A2 behaviour is still reachable. The two repositories are not identical inside —
+Postgres has a real `BOOLEAN` where SQLite fakes one with `0`/`1`, uses `%s` placeholders
+instead of `?`, `SERIAL` instead of `AUTOINCREMENT`, and `ILIKE` instead of lowercasing
+both sides for case-insensitive search. None of that leaks upward, which is the whole
+argument for the layering.
+
+## Proving the data persists
+
+Persistence was checked three ways, in increasing severity. Every transcript below is
+real output from this machine.
+
+**1. Restart the app container.** Two tasks created through the API, then the app is
+restarted while the database keeps running:
+
+```console
+$ curl -s -X POST localhost:8000/tasks -H "Content-Type: application/json" -d '{"title":"survives app restart"}'
+$ docker compose restart app
+ Container flyrank-crud-api-app-1  Started
+
+$ curl -s http://localhost:8000/tasks
+[{"id":1,...},{"id":2,...},{"id":3,...},{"id":4,"title":"survives app restart","done":false},{"id":5,"title":"survives container restart","done":false}]
+```
+
+**2. Restart the database container as well.** Both containers bounce:
+
+```console
+$ docker compose restart db app
+$ curl -s http://localhost:8000/tasks
+[... all 5 tasks still present ...]
+
+$ docker compose exec db psql -U tasks -d tasks -tAc "SELECT COUNT(*) FROM tasks;"
+5
+```
+
+**3. Destroy the containers entirely.** `docker compose down` removes the containers and
+the network — the volume is deliberately left alone:
+
+```console
+$ docker compose down
+ Container flyrank-crud-api-db-1  Removed
+ Network flyrank-crud-api_default  Removed
+
+$ docker volume ls --filter name=flyrank-crud-api_postgres_data
+flyrank-crud-api_postgres_data (local)     <- survives
+
+$ docker compose up -d
+$ curl -s http://localhost:8000/tasks
+[... all 5 tasks still present ...]
+```
+
+**The control test.** To show it really is the volume doing this rather than something
+incidental, the same teardown *with* `-v` deletes the volume, and the data does not come
+back:
+
+```console
+$ docker compose down -v
+ Volume flyrank-crud-api_postgres_data  Removed
+
+$ docker compose up -d
+$ curl -s http://localhost:8000/tasks
+[{"id":1,"title":"Learn FastAPI","done":true},{"id":2,"title":"Build a CRUD API","done":false},{"id":3,"title":"Write a README","done":false}]
+```
+
+The two custom tasks are gone and only the seeds from `db/init.sql` remain. That is the
+difference between a container and a volume in one command: containers are disposable,
+the volume is where the data actually lives.
+
+## Looking inside the database
+
+Because the data is now a file rather than a variable, you can open it with tools that
+know nothing about this project. [DB Browser for SQLite](https://sqlitebrowser.org/) is a
+free graphical viewer:
+
+```bash
+brew install --cask db-browser-for-sqlite   # macOS
+open -a "DB Browser for SQLite" tasks.db
+```
+
+Or query it straight from the terminal, which ships with macOS and most Linux distributions:
+
+```console
+$ sqlite3 -header -column tasks.db "SELECT * FROM tasks;"
+id  title              done
+--  -----------------  ----
+1   Learn FastAPI      1
+2   Build a CRUD API   0
+3   Write a README     0
+4   Buy milk           0
+5   Ship Assignment 2  0
+```
+
+Changes made here are visible through the API on the very next request — no restart
+required. Marking everything complete in SQL:
+
+```console
+$ sqlite3 tasks.db "UPDATE tasks SET done = 1;"
+
+$ curl -s http://localhost:8000/stats
+{"total":5,"done":5,"open":0}
+```
+
+More queries, with their real output, are in
+[`docs/sql-exploration.md`](docs/sql-exploration.md).
+
+## The mortality experiment, and its cure
+
+**Assignment 1 (in memory).** Create a couple of tasks, stop the server, start it again,
+then `GET /tasks`: the tasks were gone and the list was back to the 3 examples — a request
+for one of them returned `404`. The tasks lived in an ordinary Python list held in the
+server process's memory, so the list was rebuilt from its seed values every time the
+process started, and everything the previous process held was discarded when it exited.
+
+**Assignment 2 (in SQLite).** The same experiment now ends differently:
+
+```console
+$ curl -s -X POST http://localhost:8000/tasks -H "Content-Type: application/json" -d '{"title":"Buy milk"}'
+{"id":4,"title":"Buy milk","done":false}
+
+# stop the server with Ctrl-C, then start it again
+
+$ curl -s http://localhost:8000/tasks
+[...,{"id":4,"title":"Buy milk","done":false}]
+```
+
+Nothing about the API changed — same URL, same method, same JSON. What changed is where
+the data sits. The list was inside the process and died with it; the table is in a file on
+disk that outlives any number of restarts. That is the whole point of a database, and it
+is why the endpoint code barely moved: `GET /tasks` went from reading a Python list to
+running `SELECT id, title, done FROM tasks`, and every client stayed unaware.
 
 ## AI vs me
 
-> ⚠️ **The prompt below is a placeholder and must be replaced before submitting.** Stage 7
-> asks you to write the prompt yourself, from memory — that is the exercise. Swap in your
-> own wording; the findings underneath it stay valid either way.
-
 I built Stages 0–6 by hand first, so I knew exactly what "correct" looked like before
-letting an AI near it. The AI code is quarantined in [`ai-version/`](ai-version/) and
+letting an AI near it. The AI code is kept separate in [`ai-version/`](ai-version/) and
 `main.py` was never touched by the experiment.
 
 ### The prompt I gave it
